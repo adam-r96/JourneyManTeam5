@@ -75,6 +75,7 @@ void ARewindCog::Tick(float DeltaTime)
 				URewindManager* Manager = GetWorld()->GetSubsystem<URewindManager>();
 				if (Manager)
 				{
+					UE_LOG(LogTemp, Display, TEXT("Bye"));
 					Manager->StopRewind();
 					bIsRewindingActive = false;
 				}

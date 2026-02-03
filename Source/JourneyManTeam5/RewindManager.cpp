@@ -20,7 +20,10 @@ void URewindManager::Tick(float DeltaTime)
         return;
     }
 
-    APlayerController* PC = GetWorld()->GetFirstPlayerController();
+    
+    // Old debug for rewind to test if it was working, if you want this back uncomment it
+    // Take note that it will break any cogs that are in the map from the way this is all setup
+    /*APlayerController* PC = GetWorld()->GetFirstPlayerController();
     if (PC) {
         if (PC->IsInputKeyDown(EKeys::R))
         {
@@ -36,7 +39,7 @@ void URewindManager::Tick(float DeltaTime)
                 StopRewind();
             }
         }
-    }
+    }*/
 
 
     // Only do anything if we're rewinding
