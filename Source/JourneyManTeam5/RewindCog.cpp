@@ -65,7 +65,7 @@ void ARewindCog::Tick(float DeltaTime)
 				if (manager)
 				{
 					UE_LOG(LogTemp, Display, TEXT("Hello"));
-					manager->StartRewind();
+					//manager->StartRewind();
 					bIsRewindingActive = true;
 				}
 			}
@@ -76,7 +76,7 @@ void ARewindCog::Tick(float DeltaTime)
 				if (Manager)
 				{
 					UE_LOG(LogTemp, Display, TEXT("Bye"));
-					Manager->StopRewind();
+					//Manager->StopRewind();
 					bIsRewindingActive = false;
 				}
 			}
@@ -122,7 +122,7 @@ void ARewindCog::OnInteractionEndOverlap(UPrimitiveComponent* OverlappedComp, AA
 			URewindManager* Manager = GetWorld()->GetSubsystem<URewindManager>();
 			if (Manager)
 			{
-				Manager->StopRewind();
+				//Manager->StopRewind();
 				bIsRewindingActive = false;
 			}
 		}

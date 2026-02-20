@@ -9,6 +9,21 @@
 #include "RewindComponent.h"
 #include "RewindManager.generated.h"
 
+UENUM(BlueprintType)
+enum class ETimeAbility : uint8
+{
+    Pause,
+    Rewind
+};
+
+UENUM(BlueprintType)
+enum class ETimeManipulationState : uint8
+{
+    Normal,     // Recording, objects behave normally
+    Paused,     // Frozen in place, immovable
+    Rewinding   // Stepping backwards through history
+};
+
 UCLASS()
 class JOURNEYMANTEAM5_API URewindManager : public UWorldSubsystem, public FTickableGameObject
 {
@@ -36,18 +51,25 @@ public:
 
     // --- Rewind Control ---
 
-    void StartRewind();
-    void StopRewind();
+    void SwitchAbility();           // Q - toggle between pause and rewind
+    void ActivateAbility();         // R pressed - start the selected ability
+    void DeactivateAbility();       // R pressed again - stop and return to normal
 
-    bool IsRewinding() const { return bIsRewinding; }
+    bool IsTimeFrozen() const { return CurrentState != ETimeManipulationState::Normal; }
+    bool IsRewinding() const { return CurrentState == ETimeManipulationState::Rewinding; }
+    ETimeManipulationState GetCurrentState() const { return CurrentState; }
+    ETimeAbility GetSelectedAbility() const { return SelectedAbility; }
 
 private:
     // All components currently registered with the manager
     UPROPERTY()
     TArray<URewindComponent*> RegisteredComponents;
 
-    // Current rewind state
-    bool bIsRewinding = false;
+    // Current state of time manipulation
+    ETimeManipulationState CurrentState = ETimeManipulationState::Normal;
+
+    // Selected ability
+    ETimeAbility SelectedAbility = ETimeAbility::Pause;
 
     // How fast to rewind (1.0 = real time backwards, 2.0 = double speed)
     float RewindSpeed = 1.0f;

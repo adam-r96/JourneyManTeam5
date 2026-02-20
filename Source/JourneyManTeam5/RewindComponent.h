@@ -44,15 +44,22 @@ public:
 
     // --- Control Functions (called by manager) ---
 
+    // Freeze in place, keep recording position
+    void StartPause();
+
     // Start rewinding from current position
     void StartRewind();
 
-    // Stop rewinding and resume normal recording
-    void StopRewind();
+    // Return to normal operation
+    void StopTimeManipulation();
 
     // Step the rewind playback by a time delta (negative = backwards)
     void UpdateRewind(float TimeDelta);
 
+    // Update function to keep the object set to the frame that it was paused on
+    void UpdatePause();
+
+    bool IsTimeFrozen() const { return bIsTimeFrozen; }
     // Check if this component is currently being rewound
     bool IsRewinding() const { return bIsRewinding; }
 
@@ -77,8 +84,20 @@ private:
     // Counts frames since last recording
     int32 frameCounter = 0;
 
-    bool bIsRewinding = false;
+    bool bIsTimeFrozen = false;   // True when paused OR rewinding
+    bool bIsRewinding = false;    // True only when actively rewinding
 
     float rewindPlaybackTime = 0.0f;
+
+    // Physics state before we froze it (so we can restore)
+    bool bWasSimulatingPhysics = false;
+
+    // Cache the primitive component for physics operations
+    UPROPERTY()
+    UPrimitiveComponent* CachedPrimitiveComponent = nullptr;
+
+    // --- Helper Functions ---
+    void FreezePhysics();
+    void UnfreezePhysics();
 };
 

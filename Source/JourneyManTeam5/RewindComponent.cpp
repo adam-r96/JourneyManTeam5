@@ -3,6 +3,7 @@
 
 #include "RewindComponent.h"
 #include "RewindManager.h"
+#include "Components/PrimitiveComponent.h"
 
 // Sets default values for this component's properties
 URewindComponent::URewindComponent()
@@ -45,8 +46,11 @@ void URewindComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActo
 {
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 
-	if (bIsRewinding)
+	// Don't record while time is frozen (paused or rewinding)
+	if (bIsTimeFrozen)
+	{
 		return;
+	}
 
 	frameCounter++;
 
@@ -93,67 +97,97 @@ void URewindComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActo
 	}
 }
 
+void URewindComponent::StartPause()
+{
+	bIsTimeFrozen = true;
+	bIsRewinding = false;
+
+	FreezePhysics();
+
+	// Set playback time to current position so toggling to rewind starts from here
+	if (snapshotHistory.Num() > 0)
+	{
+		rewindPlaybackTime = snapshotHistory.Last().timeStamp;
+	}
+}
+
 void URewindComponent::StartRewind()
 {
 	//Can't rewind without history
 	if (snapshotHistory.Num() == 0)
 		return;
 
+	bIsTimeFrozen = true;  // Add this line
 	bIsRewinding = true;
 
-	// start playback from the most recent snapshot
-	rewindPlaybackTime = snapshotHistory.Last().timeStamp;
+	FreezePhysics();
+
+	// Only reset playback time if we're starting fresh
+	if (rewindPlaybackTime == 0.0f)
+	{
+		rewindPlaybackTime = snapshotHistory.Last().timeStamp;
+	}
 }
 
-void URewindComponent::StopRewind()
+void URewindComponent::StopTimeManipulation()
 {
+	bIsTimeFrozen = false;
 	bIsRewinding = false;
 
-	// Clear history and start from current position
-	// meaning post rewind, the object continues from where it ended up
+	UnfreezePhysics();
+
 	snapshotHistory.Empty();
 	frameCounter = 0;
+	rewindPlaybackTime = 0.0f;
 }
 
 void URewindComponent::UpdateRewind(float TimeDelta)
 {
 	if (!bIsRewinding || snapshotHistory.Num() == 0)
+	{
 		return;
+	}
 
-	// Move playback time (negative TimeDelta = going backwards)
 	rewindPlaybackTime += TimeDelta;
 
-	// Clamp to valid range 
 	float oldestTime = snapshotHistory[0].timeStamp;
 	float newestTime = snapshotHistory.Last().timeStamp;
 	rewindPlaybackTime = FMath::Clamp(rewindPlaybackTime, oldestTime, newestTime);
 
-	// find the two snapshots that we are inbetween
 	int32 afterIndex = 0;
 	for (int32 i = 0; i < snapshotHistory.Num(); i++)
 	{
-		if (snapshotHistory[i].timeStamp >= rewindPlaybackTime) {
+		if (snapshotHistory[i].timeStamp >= rewindPlaybackTime)
+		{
 			afterIndex = i;
 			break;
 		}
 	}
 
-	// Handle edge case - we're at or before the first snapshot
-	if (afterIndex == 0) {
+	if (afterIndex == 0)
+	{
 		GetOwner()->SetActorTransform(snapshotHistory[0].transform);
+
+		// Apply custom state for first snapshot too
+		if (GetOwner()->Implements<URewindableState>())
+		{
+			IRewindableState* rewindable = Cast<IRewindableState>(GetOwner());
+			if (rewindable)
+			{
+				rewindable->ApplyRewindState(snapshotHistory[0].customState);
+			}
+		}
 		return;
 	}
 
 	int32 beforeIndex = afterIndex - 1;
 
-	// calc interp alpha
 	FRewindSnapshot& before = snapshotHistory[beforeIndex];
 	FRewindSnapshot& after = snapshotHistory[afterIndex];
 
 	float timeBetween = after.timeStamp - before.timeStamp;
 	float alpha = (rewindPlaybackTime - before.timeStamp) / timeBetween;
 
-	// interp transform
 	FVector InterpolatedLocation = FMath::Lerp(before.transform.GetLocation(), after.transform.GetLocation(), alpha);
 	FQuat InterpolatedRotation = FQuat::Slerp(before.transform.GetRotation(), after.transform.GetRotation(), alpha);
 	FVector InterpolatedScale = FMath::Lerp(before.transform.GetScale3D(), after.transform.GetScale3D(), alpha);
@@ -161,14 +195,14 @@ void URewindComponent::UpdateRewind(float TimeDelta)
 	FTransform InterpolatedTransform(InterpolatedRotation, InterpolatedLocation, InterpolatedScale);
 	GetOwner()->SetActorTransform(InterpolatedTransform);
 
-	// if there is a custom state apply it
-	if (GetOwner()->Implements<URewindableState>()) {
+	// Apply custom state if the owner implements the interface
+	if (GetOwner()->Implements<URewindableState>())
+	{
 		IRewindableState* rewindable = Cast<IRewindableState>(GetOwner());
-		if (rewindable) {
-			// interp custom state values
+		if (rewindable)
+		{
 			TMap<FName, float> interpolatedState;
 
-			// get all keys from both snapshots
 			TArray<FName> allKeys;
 			before.customState.GetKeys(allKeys);
 			for (const auto& pair : after.customState)
@@ -176,7 +210,6 @@ void URewindComponent::UpdateRewind(float TimeDelta)
 				allKeys.AddUnique(pair.Key);
 			}
 
-			// interp each value
 			for (const FName& key : allKeys)
 			{
 				float BeforeVal = before.customState.Contains(key) ? before.customState[key] : 0.0f;
@@ -189,3 +222,49 @@ void URewindComponent::UpdateRewind(float TimeDelta)
 	}
 }
 
+void URewindComponent::UpdatePause()
+{
+	if (!bIsTimeFrozen || snapshotHistory.Num() == 0)
+	{
+		return;
+	}
+
+	GetOwner()->SetActorTransform(snapshotHistory.Last().transform);
+}
+
+void URewindComponent::FreezePhysics()
+{
+	// Cache the primitive component if we haven't already
+	if (!CachedPrimitiveComponent)
+	{
+		CachedPrimitiveComponent = Cast<UPrimitiveComponent>(GetOwner()->GetRootComponent());
+	}
+
+	if (CachedPrimitiveComponent && CachedPrimitiveComponent->IsSimulatingPhysics())
+	{
+		// Remember that physics was on
+		bWasSimulatingPhysics = true;
+
+		// Zero out velocity
+		//CachedPrimitiveComponent->SetPhysicsLinearVelocity(FVector::ZeroVector);
+		//CachedPrimitiveComponent->SetPhysicsAngularVelocityInDegrees(FVector::ZeroVector);
+
+		// Disable physics simulation entirely
+		CachedPrimitiveComponent->SetSimulatePhysics(false);
+	}
+}
+
+void URewindComponent::UnfreezePhysics()
+{
+	if (CachedPrimitiveComponent && bWasSimulatingPhysics)
+	{
+		// Re-enable physics
+		CachedPrimitiveComponent->SetSimulatePhysics(true);
+
+		// Zero velocity so it doesn't continue with old momentum
+		//CachedPrimitiveComponent->SetPhysicsLinearVelocity(FVector::ZeroVector);
+		//CachedPrimitiveComponent->SetPhysicsAngularVelocityInDegrees(FVector::ZeroVector);
+
+		bWasSimulatingPhysics = false;
+	}
+}
