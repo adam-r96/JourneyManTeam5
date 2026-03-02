@@ -1,5 +1,5 @@
 // Code by Jack Adams - Created 25/01/26
-// Lasted editied - 25/01/26
+// Lasted editied - 03/02/26
 
 #include "RewindManager.h"
 
@@ -20,33 +20,62 @@ void URewindManager::Tick(float DeltaTime)
         return;
     }
 
-    // Old debug for rewind to test if it was working, if you want this back uncomment it
-    // Take note that it will break any cogs that are in the map from the way this is all setup
-    // hold R to manipulate time, Q to toggle pause/rewind
     APlayerController* PC = World->GetFirstPlayerController();
-    if (PC)
+    if (!PC)
     {
-        // Q - switch between pause and rewind ability
-        if (PC->WasInputKeyJustPressed(EKeys::Q))
-        {
-            SwitchAbility();
-        }
+        return;
+    }
 
-        // R - toggle the current ability on/off
-        if (PC->WasInputKeyJustPressed(EKeys::R))
+    // Update what we're looking at
+    UpdateLookedAtComponent();
+
+    // Handle E key for targeting
+    HandleTargetingInput(PC, DeltaTime);
+
+    // Q - switch between pause and rewind ability
+    if (PC->WasInputKeyJustPressed(EKeys::Q))
+    {
+        SwitchAbility();
+    }
+
+    // R - toggle the current ability on/off
+    if (PC->WasInputKeyJustPressed(EKeys::R))
+    {
+        if (CurrentState == ETimeManipulationState::Normal)
         {
-            if (CurrentState == ETimeManipulationState::Normal)
+            ActivateAbility();
+        }
+        else
+        {
+            DeactivateAbility();
+        }
+    }
+
+    // Handle rewind playback for targeted components
+    if (CurrentState == ETimeManipulationState::Rewinding)
+    {
+        float TimeDelta = -DeltaTime * RewindSpeed;
+
+        for (URewindComponent* Component : TargetedComponents)
+        {
+            if (Component)
             {
-                ActivateAbility();
+                Component->UpdateRewind(TimeDelta);
             }
-            else
+        }
+    }
+    else if (CurrentState == ETimeManipulationState::Paused)
+    {
+        for (URewindComponent* Component : TargetedComponents)
+        {
+            if (Component)
             {
-                DeactivateAbility();
+                Component->UpdatePause();
             }
         }
     }
 
-    // Debug - show current state
+    // Debug display
     if (GEngine)
     {
         FString AbilityName = (SelectedAbility == ETimeAbility::Pause) ? TEXT("PAUSE") : TEXT("REWIND");
@@ -58,37 +87,230 @@ void URewindManager::Tick(float DeltaTime)
         case ETimeManipulationState::Rewinding: StateName = TEXT("Rewinding"); break;
         }
 
+        FString LookingAt = LookedAtComponent ? LookedAtComponent->GetOwner()->GetName() : TEXT("Nothing");
+
         GEngine->AddOnScreenDebugMessage(0, 0.0f, FColor::Cyan,
-            FString::Printf(TEXT("Selected: %s | State: %s | Q to switch, R to activate"),
-                *AbilityName, *StateName));
+            FString::Printf(TEXT("Ability: %s | State: %s | Targets: %d/%d"),
+                *AbilityName, *StateName, TargetedComponents.Num(), MaxTargets));
+
+        GEngine->AddOnScreenDebugMessage(1, 0.0f, FColor::Yellow,
+            FString::Printf(TEXT("Looking at: %s | E to target, Q to switch, R to activate"),
+                *LookingAt));
+
+        // Show clear progress if holding
+        if (bIsHoldingTargetKey && TargetKeyHoldTime > TapThreshold)
+        {
+            float ClearProgress = GetClearTargetsProgress();
+            GEngine->AddOnScreenDebugMessage(2, 0.0f, FColor::Red,
+                FString::Printf(TEXT("Clearing targets: %.0f%%"), ClearProgress * 100.0f));
+        }
+    }
+}
+
+void URewindManager::UpdateLookedAtComponent()
+{
+    UWorld* World = GetWorld();
+    APlayerController* PC = World->GetFirstPlayerController();
+    if (!PC)
+    {
+        LookedAtComponent = nullptr;
+        return;
     }
 
+    // Get camera location and direction
+    FVector CameraLocation;
+    FRotator CameraRotation;
+    PC->GetPlayerViewPoint(CameraLocation, CameraRotation);
 
-    // Handle rewind playback
-    if (CurrentState == ETimeManipulationState::Rewinding)
+    FVector TraceEnd = CameraLocation + (CameraRotation.Vector() * MaxTargetRange);
+
+    // Perform line trace
+    FHitResult HitResult;
+    FCollisionQueryParams QueryParams;
+    QueryParams.AddIgnoredActor(PC->GetPawn());
+
+    bool bHit = World->LineTraceSingleByChannel(
+        HitResult,
+        CameraLocation,
+        TraceEnd,
+        ECC_Visibility,
+        QueryParams
+    );
+
+    if (bHit && HitResult.GetActor())
     {
-        float TimeDelta = -DeltaTime * RewindSpeed;
+        // Check if hit actor has a rewind component
+        URewindComponent* RewindComp = HitResult.GetActor()->FindComponentByClass<URewindComponent>();
+        LookedAtComponent = RewindComp;
+    }
+    else
+    {
+        LookedAtComponent = nullptr;
+    }
+}
 
-        for (URewindComponent* Component : RegisteredComponents)
+void URewindManager::HandleTargetingInput(APlayerController* PC, float DeltaTime)
+{
+    bool bKeyDown = PC->IsInputKeyDown(EKeys::E);
+
+    if (bKeyDown)
+    {
+        if (!bIsHoldingTargetKey)
+        {
+            // Just started holding
+            bIsHoldingTargetKey = true;
+            TargetKeyHoldTime = 0.0f;
+        }
+        else
+        {
+            // Continue holding
+            TargetKeyHoldTime += DeltaTime;
+        }
+    }
+    else
+    {
+        // Key released
+        if (bIsHoldingTargetKey)
+        {
+            if (TargetKeyHoldTime < TapThreshold)
+            {
+                // Tap - target or untarget
+                if (LookedAtComponent)
+                {
+                    if (IsComponentTargeted(LookedAtComponent))
+                    {
+                        UntargetComponent(LookedAtComponent);
+                    }
+                    else
+                    {
+                        TargetComponent(LookedAtComponent);
+                    }
+                }
+            }
+            else if (TargetKeyHoldTime >= ClearHoldThreshold)
+            {
+                // Long hold - clear all
+                ClearAllTargets();
+            }
+            // Between tap and clear threshold = nothing happens
+
+            bIsHoldingTargetKey = false;
+            TargetKeyHoldTime = 0.0f;
+        }
+    }
+}
+
+void URewindManager::TargetComponent(URewindComponent* Component)
+{
+    if (!Component)
+    {
+        return;
+    }
+
+    if (TargetedComponents.Num() >= MaxTargets)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("Max targets reached (%d)"), MaxTargets);
+        return;
+    }
+
+    if (TargetedComponents.Contains(Component))
+    {
+        return;
+    }
+
+    TargetedComponents.Add(Component);
+    UE_LOG(LogTemp, Log, TEXT("Targeted: %s"), *Component->GetOwner()->GetName());
+
+    // If ability is already active, apply it to this new target
+    if (CurrentState != ETimeManipulationState::Normal)
+    {
+        ApplyAbilityToComponent(Component);
+    }
+}
+
+void URewindManager::UntargetComponent(URewindComponent* Component)
+{
+    if (!Component)
+    {
+        return;
+    }
+
+    if (!TargetedComponents.Contains(Component))
+    {
+        return;
+    }
+
+    // If ability is active, remove it from this component first
+    if (CurrentState != ETimeManipulationState::Normal)
+    {
+        RemoveAbilityFromComponent(Component);
+    }
+
+    TargetedComponents.Remove(Component);
+    UE_LOG(LogTemp, Log, TEXT("Untargeted: %s"), *Component->GetOwner()->GetName());
+}
+
+void URewindManager::ClearAllTargets()
+{
+    // Remove ability from all targeted components if active
+    if (CurrentState != ETimeManipulationState::Normal)
+    {
+        for (URewindComponent* Component : TargetedComponents)
         {
             if (Component)
             {
-                Component->UpdateRewind(TimeDelta);
-            }
-        }
-    }
-    else if (CurrentState == ETimeManipulationState::Paused) 
-    {
-        for (URewindComponent* Component : RegisteredComponents) 
-        {
-            if (Component) 
-            {
-                Component->UpdatePause();
+                RemoveAbilityFromComponent(Component);
             }
         }
     }
 
-    // Paused state doesn't need to do anything - objects are just frozen
+    TargetedComponents.Empty();
+    UE_LOG(LogTemp, Log, TEXT("Cleared all targets"));
+}
+
+bool URewindManager::IsComponentTargeted(URewindComponent* Component) const
+{
+    return TargetedComponents.Contains(Component);
+}
+
+float URewindManager::GetClearTargetsProgress() const
+{
+    if (!bIsHoldingTargetKey || TargetKeyHoldTime < TapThreshold)
+    {
+        return 0.0f;
+    }
+
+    float ProgressTime = TargetKeyHoldTime - TapThreshold;
+    float TotalTime = ClearHoldThreshold - TapThreshold;
+
+    return FMath::Clamp(ProgressTime / TotalTime, 0.0f, 1.0f);
+}
+
+void URewindManager::ApplyAbilityToComponent(URewindComponent* Component)
+{
+    if (!Component)
+    {
+        return;
+    }
+
+    if (CurrentState == ETimeManipulationState::Paused)
+    {
+        Component->StartPause();
+    }
+    else if (CurrentState == ETimeManipulationState::Rewinding)
+    {
+        Component->StartRewind();
+    }
+}
+
+void URewindManager::RemoveAbilityFromComponent(URewindComponent* Component)
+{
+    if (!Component)
+    {
+        return;
+    }
+
+    Component->StopTimeManipulation();
 }
 
 void URewindManager::RegisterComponent(URewindComponent* Component)
@@ -134,11 +356,17 @@ void URewindManager::ActivateAbility()
         return;
     }
 
+    if (TargetedComponents.Num() == 0)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("No targets selected"));
+        return;
+    }
+
     if (SelectedAbility == ETimeAbility::Pause)
     {
         CurrentState = ETimeManipulationState::Paused;
 
-        for (URewindComponent* Component : RegisteredComponents)
+        for (URewindComponent* Component : TargetedComponents)
         {
             if (Component)
             {
@@ -146,13 +374,13 @@ void URewindManager::ActivateAbility()
             }
         }
 
-        UE_LOG(LogTemp, Log, TEXT("PAUSE activated"));
+        UE_LOG(LogTemp, Log, TEXT("PAUSE activated on %d targets"), TargetedComponents.Num());
     }
     else
     {
         CurrentState = ETimeManipulationState::Rewinding;
 
-        for (URewindComponent* Component : RegisteredComponents)
+        for (URewindComponent* Component : TargetedComponents)
         {
             if (Component)
             {
@@ -160,7 +388,7 @@ void URewindManager::ActivateAbility()
             }
         }
 
-        UE_LOG(LogTemp, Log, TEXT("REWIND activated"));
+        UE_LOG(LogTemp, Log, TEXT("REWIND activated on %d targets"), TargetedComponents.Num());
     }
 }
 
@@ -173,7 +401,7 @@ void URewindManager::DeactivateAbility()
 
     CurrentState = ETimeManipulationState::Normal;
 
-    for (URewindComponent* Component : RegisteredComponents)
+    for (URewindComponent* Component : TargetedComponents)
     {
         if (Component)
         {
@@ -181,5 +409,5 @@ void URewindManager::DeactivateAbility()
         }
     }
 
-    UE_LOG(LogTemp, Log, TEXT("Ability deactivated - returning to NORMAL"));
+    UE_LOG(LogTemp, Log, TEXT("Ability deactivated"));
 }

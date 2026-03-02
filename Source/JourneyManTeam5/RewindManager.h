@@ -1,5 +1,5 @@
 // Code by Jack Adams - Created 25/01/26
-// Lasted editied - 25/01/26
+// Lasted editied - 03/02/26
 
 #pragma once
 
@@ -55,22 +55,61 @@ public:
     void ActivateAbility();         // R pressed - start the selected ability
     void DeactivateAbility();       // R pressed again - stop and return to normal
 
+    // --- Targeting ---
+    void TargetComponent(URewindComponent* Component);
+    void UntargetComponent(URewindComponent* Component);
+    void ClearAllTargets();
+    bool IsComponentTargeted(URewindComponent* Component) const;
+
+    // --- Getters ---
     bool IsTimeFrozen() const { return CurrentState != ETimeManipulationState::Normal; }
     bool IsRewinding() const { return CurrentState == ETimeManipulationState::Rewinding; }
     ETimeManipulationState GetCurrentState() const { return CurrentState; }
     ETimeAbility GetSelectedAbility() const { return SelectedAbility; }
+    URewindComponent* GetLookedAtComponent() const { return LookedAtComponent; }
+    const TArray<URewindComponent*>& GetTargetedComponents() const { return TargetedComponents; }
+    float GetClearTargetsProgress() const;
 
 private:
-    // All components currently registered with the manager
+    // --- Registered Components ---
     UPROPERTY()
     TArray<URewindComponent*> RegisteredComponents;
 
+    // --- Targeting ---
+    UPROPERTY()
+    TArray<URewindComponent*> TargetedComponents;
+
+    UPROPERTY()
+    URewindComponent* LookedAtComponent = nullptr;
+
+    // --- Targeting Configuration ---
+    UPROPERTY(EditAnywhere, Category = "Targeting")
+    int32 MaxTargets = 5;
+
+    UPROPERTY(EditAnywhere, Category = "Targeting")
+    float MaxTargetRange = 2000.0f;
+
+    UPROPERTY(EditAnywhere, Category = "Targeting")
+    float TapThreshold = 0.3f;
+
+    UPROPERTY(EditAnywhere, Category = "Targeting")
+    float ClearHoldThreshold = 1.0f;
+
+    // --- Targeting Runtime ---
+    float TargetKeyHoldTime = 0.0f;
+    bool bIsHoldingTargetKey = false;
+
+    // --- State ---
     // Current state of time manipulation
     ETimeManipulationState CurrentState = ETimeManipulationState::Normal;
-
     // Selected ability
     ETimeAbility SelectedAbility = ETimeAbility::Pause;
-
     // How fast to rewind (1.0 = real time backwards, 2.0 = double speed)
     float RewindSpeed = 1.0f;
+
+    // --- Helper Functions ---
+    void UpdateLookedAtComponent();
+    void HandleTargetingInput(APlayerController* PC, float DeltaTime);
+    void ApplyAbilityToComponent(URewindComponent* Component);
+    void RemoveAbilityFromComponent(URewindComponent* Component);
 };
